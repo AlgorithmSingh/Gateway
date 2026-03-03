@@ -58,6 +58,10 @@ function shortSession(id?: string): string {
   return `${id.slice(0, 10)}...${id.slice(-4)}`;
 }
 
+function isAbsolutePathLike(input: string): boolean {
+  return /^\/[^/\s]+\/.+/.test(input) || /^[A-Za-z]:[\\/]/.test(input);
+}
+
 async function runCli(): Promise<void> {
   const configPath = process.env.FINOPS_CONFIG
     ? path.resolve(process.env.FINOPS_CONFIG)
@@ -69,6 +73,7 @@ async function runCli(): Promise<void> {
 
   let activeSessionId: string | undefined;
   let busy = false;
+  let pendingNewSessionTimer: NodeJS.Timeout | null = null;
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -82,6 +87,40 @@ async function runCli(): Promise<void> {
 
   const printHelp = () => {
     process.stdout.write(formatHelp() + "\n");
+  };
+
+  const clearPendingNewSessionTimeout = () => {
+    if (pendingNewSessionTimer) {
+      clearTimeout(pendingNewSessionTimer);
+      pendingNewSessionTimer = null;
+    }
+  };
+
+  const armPendingNewSessionTimeout = () => {
+    clearPendingNewSessionTimeout();
+    pendingNewSessionTimer = setTimeout(() => {
+      pendingNewSessionTimer = null;
+      process.stderr.write(
+        formatError("No response received for /new. Requesting session list to recover.") + "\n",
+      );
+      send({ method: "sessions_list" });
+      rl.prompt();
+    }, 4000);
+  };
+
+  const sendChat = (message: string) => {
+    busy = true;
+    startSpinner("Agent is thinking...");
+    const sent = send({
+      method: "chat",
+      message,
+      sessionId: activeSessionId,
+    });
+    if (!sent) {
+      busy = false;
+      stopSpinner();
+      rl.prompt();
+    }
   };
 
   const send = (payload: Record<string, unknown>): boolean => {
@@ -124,6 +163,9 @@ async function runCli(): Promise<void> {
     }
 
     if (evt.type === "text") {
+      if (!busy) {
+        return;
+      }
       stopSpinner();
       process.stdout.write(formatText(evt.content));
       // No prompt — more text chunks may follow. Prompt appears on "done".
@@ -131,6 +173,9 @@ async function runCli(): Promise<void> {
     }
 
     if (evt.type === "tool_call") {
+      if (!busy) {
+        return;
+      }
       stopSpinner();
       process.stdout.write(formatToolCall(evt.name, evt.args) + "\n");
       startSpinner(`Running ${evt.name}...`);
@@ -138,6 +183,9 @@ async function runCli(): Promise<void> {
     }
 
     if (evt.type === "tool_result") {
+      if (!busy) {
+        return;
+      }
       stopSpinner();
 
       const complianceData = parseCostComplianceResult(evt.name, evt.content);
@@ -155,6 +203,7 @@ async function runCli(): Promise<void> {
 
     if (evt.type === "sessions") {
       stopSpinner();
+      clearPendingNewSessionTimeout();
       if (evt.activeSessionId) {
         activeSessionId = evt.activeSessionId;
       }
@@ -166,6 +215,7 @@ async function runCli(): Promise<void> {
 
     if (evt.type === "session_active") {
       stopSpinner();
+      clearPendingNewSessionTimeout();
       activeSessionId = evt.sessionId;
       process.stdout.write(formatInfo(`Active session: ${evt.sessionId}`) + "\n");
       updatePrompt();
@@ -174,6 +224,9 @@ async function runCli(): Promise<void> {
     }
 
     if (evt.type === "done") {
+      if (!busy) {
+        return;
+      }
       stopSpinner();
       busy = false;
       process.stdout.write(formatDone(evt.sessionId, evt.tokenUsage) + "\n");
@@ -183,6 +236,7 @@ async function runCli(): Promise<void> {
 
     if (evt.type === "error") {
       stopSpinner();
+      clearPendingNewSessionTimeout();
       busy = false;
       process.stderr.write(formatError(evt.message) + "\n");
       rl.prompt();
@@ -196,12 +250,14 @@ async function runCli(): Promise<void> {
 
   ws.on("close", () => {
     stopSpinner();
+    clearPendingNewSessionTimeout();
     process.stdout.write(formatInfo("Disconnected from gateway.") + "\n");
     process.exit(0);
   });
 
   ws.on("error", (error) => {
     stopSpinner();
+    clearPendingNewSessionTimeout();
     process.stderr.write(formatError(`WebSocket error: ${String(error)}`) + "\n");
   });
 
@@ -243,7 +299,9 @@ async function runCli(): Promise<void> {
       stopSpinner();
       busy = false;
       process.stdout.write(formatInfo("Requesting new session...") + "\n");
-      send({ method: "session_create" });
+      if (send({ method: "session_create" })) {
+        armPendingNewSessionTimeout();
+      }
       rl.prompt();
       return;
     }
@@ -261,10 +319,12 @@ async function runCli(): Promise<void> {
     }
 
     if (line.startsWith("/")) {
-      process.stdout.write(`Unknown command: ${line}\n`);
-      printHelp();
-      rl.prompt();
-      return;
+      if (!isAbsolutePathLike(line)) {
+        process.stdout.write(`Unknown command: ${line}\n`);
+        printHelp();
+        rl.prompt();
+        return;
+      }
     }
 
     if (busy) {
@@ -273,13 +333,7 @@ async function runCli(): Promise<void> {
       return;
     }
 
-    busy = true;
-    startSpinner("Agent is thinking...");
-    send({
-      method: "chat",
-      message: line,
-      sessionId: activeSessionId,
-    });
+    sendChat(line);
   });
 }
 
