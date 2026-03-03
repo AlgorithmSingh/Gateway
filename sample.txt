@@ -1,0 +1,57 @@
+"Investigate the BQ cost spike in project data-prod-456 on March 1st. The affected tables are billing.raw_events and billing.aggregated_costs."
+
+"We received an alert that BigQuery costs in project my-gcp-project-123 spiked by 400% on 2026-02-28. The tables involved are dataset_analytics.user_events and dataset_analytics.session_logs. Investigate the root cause of this cost anomaly and recommend fixes."
+
+Key elements the prompt should contain:
+
+A cost anomaly signal — a spike, unexpected bill, budget alert
+GCP project ID — so the tool knows where to query
+Date/time range — when the anomaly occurred
+Table or dataset names — what to investigate
+=====
+Example 1 — Passing (using passing-costdata.json)
+Prompt: "Evaluate the cost data for my Terraform plan against the cost policy. Here's my Infracost JSON output: examples/cost/passing-costdata.json"
+
+Expected result: PASS
+
+Total monthly cost: $84.50 (limit $120)
+Diff: +$12.50 (limit $15)
+Unsupported resources: 0
+All thresholds satisfied.
+Example 2 — Failing on diff (using sample-costdata.json)
+Prompt: "Evaluate the cost data for my Terraform plan against the cost policy. Here's my Infracost JSON output: examples/cost/sample-costdata.json"
+
+Expected result: FAIL
+
+Total monthly cost: $108.24 (limit $120 — ok)
+Diff: +$18.31 (limit $15 — exceeded by $3.31)
+Example 3 — Failing on multiple thresholds (using failing-costdata.json)
+Prompt: "Evaluate the cost data for my Terraform plan against the cost policy. Here's my Infracost JSON output: examples/cost/failing-costdata.json"
+
+Expected result: FAIL
+
+Total monthly cost: $412.80 (limit $120 — exceeded by $292.80)
+Diff: +$317.80 (limit $15 — exceeded by $302.80)
+Unsupported resources: 1 (limit 0 — violated)
+Example 4 — Massive overspend (using multiregion-buckets-costdata.json)
+Prompt: "Evaluate the cost data for my Terraform plan against the cost policy. Here's my Infracost JSON output: examples/cost/multiregion-buckets-costdata.json"
+
+Expected result: FAIL
+
+Total monthly cost: $1,331.20 (limit $120 — exceeded by $1,211.20)
+Diff: +$1,331.20 (limit $15 — exceeded by $1,316.20)
+5 MULTI_REGIONAL storage buckets across US, EU, ASIA
+
+=======
+Basic compliance check:
+
+"Evaluate the cost data for my Terraform plan against the cost policy. Here's my Infracost JSON output: <paste or path to costdata.json>"
+
+PR gate-style check:
+
+"Check if this infrastructure change passes our cost policy. The total monthly cost is $108.24 and the diff is +$18.31. Our limits are $120 total and $15 max diff."
+
+Using the example data directly:
+
+"Run the cost compliance policy against examples/cost/failing-costdata.json and explain which thresholds are violated and by how much."
+
